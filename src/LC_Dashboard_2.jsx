@@ -23,7 +23,13 @@ const ERA_COLORS=Object.fromEntries(ERA_DEFS.map(e=>[e.label,e.color]));
 function buildLineData(raw){
   return raw.map(r=>{
     const points=[];
-    r.pts.forEach((v,i)=>{if(v!==null)points.push({age:ages[i],lc:v});});
+    // Handle both full 44-element arrays and shorter arrays
+    const ptsArr = r.pts || [];
+    ptsArr.forEach((v,i)=>{
+      if(v!==null && v!==undefined && i<ages.length)
+        points.push({age:ages[i],lc:v});
+    });
+    // last non-null point
     const last=points[points.length-1];
     return {...r,points,lastAge:last?.age??0,lastLC:last?.lc??0,color:getColor(r.aq),era:getEra(r.aq)};
   });
@@ -362,7 +368,7 @@ function ChartPanel({seg, showEras, hoveredAQ, setHoveredAQ, selectedAQs, setSel
                 <Line key={r.aq+"-l"} data={r.points} dataKey="lc" stroke={r.color}
                   strokeWidth={isSel?3:isHov?2.5:1} dot={false} strokeOpacity={op}
                   isAnimationActive={false} connectNulls={false}/>,
-                r.implied!==null?<Line key={r.aq+"-c"}
+                (r.implied!==null&&r.lastAge>0)?<Line key={r.aq+"-c"}
                   data={[{age:r.lastAge,lc:r.implied},{age:140,lc:r.implied}]}
                   dataKey="lc" stroke={r.color} strokeWidth={isSel?2.5:1}
                   strokeDasharray="4 3" dot={false} strokeOpacity={op}
@@ -458,7 +464,7 @@ function ChartPanel({seg, showEras, hoveredAQ, setHoveredAQ, selectedAQs, setSel
                 {selRows.map(r=>[
                   <Line key={r.aq+"-l"} data={r.points} dataKey="lc" name={r.aq}
                     stroke={r.color} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false}/>,
-                  r.implied!==null?<Line key={r.aq+"-c"}
+                  (r.implied!==null&&r.lastAge>0)?<Line key={r.aq+"-c"}
                     data={[{age:r.lastAge,lc:r.implied},{age:140,lc:r.implied}]}
                     dataKey="lc" stroke={r.color} strokeWidth={1.5} strokeDasharray="4 3"
                     dot={false} isAnimationActive={false} legendType="none"/>:null
@@ -519,7 +525,7 @@ function ChartPanel({seg, showEras, hoveredAQ, setHoveredAQ, selectedAQs, setSel
                       <Tooltip content={()=>null}/>
                       <Line data={r.points} dataKey="lc" stroke={r.color}
                         strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false}/>
-                      {r.implied!==null&&<Line
+                      {(r.implied!==null&&r.lastAge>0)&&<Line
                         data={[{age:r.lastAge,lc:r.implied},{age:140,lc:r.implied}]}
                         dataKey="lc" stroke={r.color} strokeWidth={1.2} strokeDasharray="4 3"
                         dot={false} isAnimationActive={false} legendType="none"/>}
@@ -647,7 +653,10 @@ export default function Dashboard(){
             const implied = lcVals["Implied LC"] ?? lcVals["ImpliedLC"] ?? (lcCols.length>=1?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[0]})]?.v):null);
             const defaultLC = hasExtra ? (lcVals["Default LC"] ?? lcVals["DefaultLC"] ?? (lcCols.length>=2?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[1]})]?.v):null)) : null;
             const priorLC = hasExtra ? (lcVals["Prior LC"] ?? lcVals["PriorLC"] ?? (lcCols.length>=3?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[2]})]?.v):null)) : null;
-            rows.push({aq,pts,implied,defaultLC,priorLC});
+            // Normalize: trim trailing nulls but keep length aligned to ages
+            const trimmed=pts.slice(0,ages.length);
+            while(trimmed.length<ages.length) trimmed.push(null);
+            rows.push({aq,pts:trimmed,implied,defaultLC,priorLC});
           } else if(s.includes("Selected CQ")||s.includes("CQ LC")){
             for(let c=1;c<=range.e.c;c++){
               const cell=ws[XLSX.utils.encode_cell({r,c})];
