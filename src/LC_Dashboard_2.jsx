@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
+\import { useState, useMemo } from "react";
 import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
+import * as XLSX from "xlsx";
 
 const ages = [0,1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118,121,124,127];
 
@@ -582,16 +583,17 @@ export default function Dashboard(){
   const activeSegments = dynamicSegments || SEGMENTS;
   const seg=activeSegments.find(s=>s.key===activeTab) || activeSegments[0];
 
-  const handleFile = async (file) => {
+  const handleFile = (file) => {
     if (!file) return;
     setUploadStatus("parsing");
     try {
-      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs");
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, {type:"array"});
+      const wb = XLSX.read(buf, {type:"array", cellFormula:false, cellNF:false});
 
       const pv = (v) => {
         if (v===null||v===undefined||v==="#N/A"||v==="") return null;
+        // Reject Excel cross-workbook formula references like '[1]Sheet'!$A1
+        if (typeof v==="string" && (v.includes("!")||v.includes("$")||v.startsWith("'"))) return null;
         const n = parseFloat(v);
         return isNaN(n) ? null : Math.round(n*10000)/10000;
       };
@@ -741,14 +743,17 @@ export default function Dashboard(){
       }
 
       if(newSegs.length===0) throw new Error("No valid data found");
-      // Debug: log first segment's first few rows to verify lastAge
+      // Debug: log last 8 rows of first segment to check implied values
       if(newSegs[0]?.data?.length>0){
-        const sample=newSegs[0].data.slice(0,3).map(r=>{
+        const AGES_DBG=[0,1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118,121,124,127];
+        const sample=newSegs[0].data.slice(-8).map(r=>{
           const pts=r.pts||[];
           const lastNonNull=pts.reduce((acc,v,i)=>v!==null?i:acc,-1);
-          return {aq:r.aq,implied:r.implied,lastPtIdx:lastNonNull,lastAge:lastNonNull>=0?[0,1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118,121,124,127][lastNonNull]:0};
+          return {aq:r.aq,implied:r.implied,defaultLC:r.defaultLC,priorLC:r.priorLC,lastPtIdx:lastNonNull,lastAge:lastNonNull>=0?AGES_DBG[lastNonNull]:0};
         });
-        console.log("DEBUG parsed sample:",JSON.stringify(sample));
+        console.log("DEBUG last 8 rows:",JSON.stringify(sample));
+        // Also log LC col labels found
+        console.log("DEBUG all seg keys:", newSegs.map(s=>s.key));
       }
       setDynamicSegments(newSegs);
       setActiveTab(newSegs[0].key);
