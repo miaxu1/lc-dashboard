@@ -604,65 +604,54 @@ export default function Dashboard(){
         const range=XLSX.utils.decode_range(ref);
         let cq=null, headerRow=-1;
 
-        // Find header row where col 0 = "AQ"
+        // Step 1: find the AQ header row
         for(let r=range.s.r;r<=range.e.r;r++){
           const cell=ws[XLSX.utils.encode_cell({r,c:0})];
           if(cell?.v==="AQ"){headerRow=r;break;}
         }
         if(headerRow<0) return {rows,cq:null};
 
-        // Map column index to age index, and find LC label columns
-        // Try numeric header matching first, fall back to positional
-        const colToAgeIdx={};
-        const lcCols=[];
-        let ageCols=[];  // all columns that are age data (in order)
+        // Step 2: scan ALL rows above and including headerRow for LC label columns
+        // (Implied LC / Default LC / Prior LC may be in a different row than AQ)
+        const lcColMap={};  // col index -> label
+        for(let r=range.s.r;r<=headerRow;r++){
+          for(let c=1;c<=range.e.c;c++){
+            const cell=ws[XLSX.utils.encode_cell({r,c})];
+            if(!cell?.v) continue;
+            const sv=String(cell.v).trim();
+            if(sv.toLowerCase().includes("implied")||sv.toLowerCase().includes("default")||sv.toLowerCase().includes("prior")){
+              if(!lcColMap[c]) lcColMap[c]=sv;
+            }
+          }
+        }
 
+        // Step 3: map age header cols from AQ row
+        const colToAgeIdx={};
         for(let c=1;c<=range.e.c;c++){
+          if(lcColMap[c]) continue;  // skip LC cols
           const hcell=ws[XLSX.utils.encode_cell({r:headerRow,c})];
-          if(!hcell||hcell.v===null||hcell.v===undefined||hcell.v==="") continue;
-          const hv=hcell.v;
-          // Try as number (handles both numeric and string-numeric headers)
-          const asNum=parseFloat(String(hv).trim());
+          if(!hcell||hcell.v===null||hcell.v===undefined) continue;
+          const asNum=parseFloat(String(hcell.v));
           if(!isNaN(asNum)){
             const idx=AGES_EXPECTED.indexOf(asNum);
-            if(idx>=0){
-              colToAgeIdx[c]=idx;
-              ageCols.push(c);
-            } else {
-              // numeric but not in ages list — treat as LC column
-              lcCols.push({col:c,label:String(hv).trim()});
-            }
-          } else {
-            lcCols.push({col:c,label:String(hv).trim()});
+            if(idx>=0) colToAgeIdx[c]=idx;
           }
         }
 
-        // If no age cols found via header, fall back to positional:
-        // assume first 44 numeric-header cols are ages, last 1-3 are LC labels
-        if(ageCols.length===0){
-          let numericCols=[], stringCols=[];
-          for(let c=1;c<=range.e.c;c++){
-            const hcell=ws[XLSX.utils.encode_cell({r:headerRow,c})];
-            if(!hcell||hcell.v===null||hcell.v===undefined) continue;
-            if(!isNaN(parseFloat(String(hcell.v)))) numericCols.push(c);
-            else stringCols.push({col:c,label:String(hcell.v).trim()});
-          }
-          numericCols.slice(0,44).forEach((c,i)=>{colToAgeIdx[c]=i;ageCols.push(c);});
-          if(stringCols.length>0) lcCols.push(...stringCols);
-          else {
-            // No string headers — last 1 or 3 numeric cols are LC values
-            const extra=hasExtra?3:1;
-            ageCols.slice(-extra).forEach(c=>{delete colToAgeIdx[c];});
-            ageCols=ageCols.slice(0,-extra);
-            // re-index
-            ageCols.forEach((c,i)=>{colToAgeIdx[c]=i;});
-            numericCols.slice(-extra).forEach((c,i)=>{
-              lcCols.push({col:c,label:i===0?"Implied LC":i===1?"Default LC":"Prior LC"});
-            });
-          }
+        // Step 4: if still no LC cols found, assume last 1-3 cols are LC
+        if(Object.keys(lcColMap).length===0){
+          const extra=hasExtra?3:1;
+          const allAgeCols=Object.keys(colToAgeIdx).map(Number).sort((a,b)=>a-b);
+          allAgeCols.slice(-extra).forEach((c,i)=>{
+            delete colToAgeIdx[c];
+            lcColMap[c]=i===0?"Implied LC":i===1?"Default LC":"Prior LC";
+          });
         }
 
-        // Parse data rows
+        const lcCols=Object.entries(lcColMap).map(([col,label])=>({col:parseInt(col),label}))
+          .sort((a,b)=>a.col-b.col);
+
+        // Step 5: parse data rows
         for(let r=headerRow+1;r<=range.e.r;r++){
           const c0=ws[XLSX.utils.encode_cell({r,c:0})];
           if(!c0?.v) continue;
@@ -679,14 +668,14 @@ export default function Dashboard(){
             const lcMap={};
             for(const {col,label} of lcCols){
               const cell=ws[XLSX.utils.encode_cell({r,c:col})];
-              lcMap[label]=pv(cell?.v);
+              lcMap[label.trim()]=pv(cell?.v);
             }
-            const implied   = lcMap["Implied LC"] ?? lcMap["ImpliedLC"] ?? (lcCols[0]?lcMap[lcCols[0].label]:null);
-            const defaultLC = hasExtra?(lcMap["Default LC"]??lcMap["DefaultLC"]??(lcCols[1]?lcMap[lcCols[1].label]:null)):null;
-            const priorLC   = hasExtra?(lcMap["Prior LC"]  ??lcMap["PriorLC"]  ??(lcCols[2]?lcMap[lcCols[2].label]:null)):null;
+            const implied   = lcMap["Implied LC"]??lcMap["ImpliedLC"]??(lcCols[0]?lcMap[lcCols[0].label.trim()]:null);
+            const defaultLC = hasExtra?(lcMap["Default LC"]??lcMap["DefaultLC"]??(lcCols[1]?lcMap[lcCols[1].label.trim()]:null)):null;
+            const priorLC   = hasExtra?(lcMap["Prior LC"]??lcMap["Prior LC "]??lcMap["PriorLC"]??(lcCols[2]?lcMap[lcCols[2].label.trim()]:null)):null;
             rows.push({aq,pts,implied,defaultLC,priorLC});
 
-          } else if(s.includes("Selected CQ")||s.includes("Selected")){
+          } else if(s.includes("Selected")||s.includes("CQ LC")){
             for(let c=1;c<=range.e.c;c++){
               const cell=ws[XLSX.utils.encode_cell({r,c})];
               if(cell?.v!==null&&cell?.v!==undefined&&!isNaN(parseFloat(cell.v))){
