@@ -602,65 +602,96 @@ export default function Dashboard(){
         const rows=[], ref=ws["!ref"];
         if(!ref) return {rows,cq:null};
         const range=XLSX.utils.decode_range(ref);
-        let cq=null;
-        // Find header row (AQ row) and map column index -> age index
-        let headerRow=-1, dataStartRow=-1;
-        const colToAgeIdx={};  // col index -> index in AGES_EXPECTED
-        const lcColLabels=[];  // labels after age cols (Implied LC, Default LC, Prior LC)
-        const lcCols=[];       // column indices of LC label cols
+        let cq=null, headerRow=-1;
+
+        // Find header row where col 0 = "AQ"
         for(let r=range.s.r;r<=range.e.r;r++){
           const cell=ws[XLSX.utils.encode_cell({r,c:0})];
-          if(cell?.v==="AQ"){
-            headerRow=r; dataStartRow=r+1;
-            // Read header cols
-            for(let c=1;c<=range.e.c;c++){
-              const hc=ws[XLSX.utils.encode_cell({r,c})];
-              if(hc?.v===undefined||hc?.v===null||hc?.v==="") continue;
-              const hv=hc.v;
-              if(typeof hv==="number"){
-                const idx=AGES_EXPECTED.indexOf(hv);
-                if(idx>=0) colToAgeIdx[c]=idx;
-              } else {
-                // string label like "Implied LC", "Default LC", "Prior LC"
-                lcColLabels.push({col:c, label:String(hv)});
-                lcCols.push(c);
-              }
-            }
-            break;
-          }
+          if(cell?.v==="AQ"){headerRow=r;break;}
         }
         if(headerRow<0) return {rows,cq:null};
 
-        for(let r=dataStartRow;r<=range.e.r;r++){
+        // Map column index to age index, and find LC label columns
+        // Try numeric header matching first, fall back to positional
+        const colToAgeIdx={};
+        const lcCols=[];
+        let ageCols=[];  // all columns that are age data (in order)
+
+        for(let c=1;c<=range.e.c;c++){
+          const hcell=ws[XLSX.utils.encode_cell({r:headerRow,c})];
+          if(!hcell||hcell.v===null||hcell.v===undefined||hcell.v==="") continue;
+          const hv=hcell.v;
+          // Try as number (handles both numeric and string-numeric headers)
+          const asNum=parseFloat(String(hv).trim());
+          if(!isNaN(asNum)){
+            const idx=AGES_EXPECTED.indexOf(asNum);
+            if(idx>=0){
+              colToAgeIdx[c]=idx;
+              ageCols.push(c);
+            } else {
+              // numeric but not in ages list — treat as LC column
+              lcCols.push({col:c,label:String(hv).trim()});
+            }
+          } else {
+            lcCols.push({col:c,label:String(hv).trim()});
+          }
+        }
+
+        // If no age cols found via header, fall back to positional:
+        // assume first 44 numeric-header cols are ages, last 1-3 are LC labels
+        if(ageCols.length===0){
+          let numericCols=[], stringCols=[];
+          for(let c=1;c<=range.e.c;c++){
+            const hcell=ws[XLSX.utils.encode_cell({r:headerRow,c})];
+            if(!hcell||hcell.v===null||hcell.v===undefined) continue;
+            if(!isNaN(parseFloat(String(hcell.v)))) numericCols.push(c);
+            else stringCols.push({col:c,label:String(hcell.v).trim()});
+          }
+          numericCols.slice(0,44).forEach((c,i)=>{colToAgeIdx[c]=i;ageCols.push(c);});
+          if(stringCols.length>0) lcCols.push(...stringCols);
+          else {
+            // No string headers — last 1 or 3 numeric cols are LC values
+            const extra=hasExtra?3:1;
+            ageCols.slice(-extra).forEach(c=>{delete colToAgeIdx[c];});
+            ageCols=ageCols.slice(0,-extra);
+            // re-index
+            ageCols.forEach((c,i)=>{colToAgeIdx[c]=i;});
+            numericCols.slice(-extra).forEach((c,i)=>{
+              lcCols.push({col:c,label:i===0?"Implied LC":i===1?"Default LC":"Prior LC"});
+            });
+          }
+        }
+
+        // Parse data rows
+        for(let r=headerRow+1;r<=range.e.r;r++){
           const c0=ws[XLSX.utils.encode_cell({r,c:0})];
           if(!c0?.v) continue;
-          const s=String(c0.v);
+          const s=String(c0.v).trim();
+
           if(s.startsWith("_20")){
             const aq=s.slice(1);
-            // Build pts array aligned to AGES_EXPECTED
             const pts=new Array(AGES_EXPECTED.length).fill(null);
-            for(const [col,aidx] of Object.entries(colToAgeIdx)){
-              const cell=ws[XLSX.utils.encode_cell({r,c:parseInt(col)})];
-              pts[aidx]=pv(cell?.v);
+            for(const [colStr,aidx] of Object.entries(colToAgeIdx)){
+              const cell=ws[XLSX.utils.encode_cell({r,c:parseInt(colStr)})];
+              const val=pv(cell?.v);
+              if(val!==null) pts[aidx]=val;
             }
-            // Read LC label columns
-            const lcVals={};
-            for(const {col,label} of lcColLabels){
+            const lcMap={};
+            for(const {col,label} of lcCols){
               const cell=ws[XLSX.utils.encode_cell({r,c:col})];
-              lcVals[label]=pv(cell?.v);
+              lcMap[label]=pv(cell?.v);
             }
-            // Find implied/default/prior by label or position
-            const implied = lcVals["Implied LC"] ?? lcVals["ImpliedLC"] ?? (lcCols.length>=1?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[0]})]?.v):null);
-            const defaultLC = hasExtra ? (lcVals["Default LC"] ?? lcVals["DefaultLC"] ?? (lcCols.length>=2?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[1]})]?.v):null)) : null;
-            const priorLC = hasExtra ? (lcVals["Prior LC"] ?? lcVals["PriorLC"] ?? (lcCols.length>=3?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[2]})]?.v):null)) : null;
-            // Normalize: trim trailing nulls but keep length aligned to ages
-            const trimmed=pts.slice(0,ages.length);
-            while(trimmed.length<ages.length) trimmed.push(null);
-            rows.push({aq,pts:trimmed,implied,defaultLC,priorLC});
-          } else if(s.includes("Selected CQ")||s.includes("CQ LC")){
+            const implied   = lcMap["Implied LC"] ?? lcMap["ImpliedLC"] ?? (lcCols[0]?lcMap[lcCols[0].label]:null);
+            const defaultLC = hasExtra?(lcMap["Default LC"]??lcMap["DefaultLC"]??(lcCols[1]?lcMap[lcCols[1].label]:null)):null;
+            const priorLC   = hasExtra?(lcMap["Prior LC"]  ??lcMap["PriorLC"]  ??(lcCols[2]?lcMap[lcCols[2].label]:null)):null;
+            rows.push({aq,pts,implied,defaultLC,priorLC});
+
+          } else if(s.includes("Selected CQ")||s.includes("Selected")){
             for(let c=1;c<=range.e.c;c++){
               const cell=ws[XLSX.utils.encode_cell({r,c})];
-              if(cell?.v && !isNaN(parseFloat(cell.v))){cq=Math.round(parseFloat(cell.v)*10000)/10000;break;}
+              if(cell?.v!==null&&cell?.v!==undefined&&!isNaN(parseFloat(cell.v))){
+                cq=Math.round(parseFloat(cell.v)*10000)/10000;break;
+              }
             }
           }
         }
@@ -721,6 +752,15 @@ export default function Dashboard(){
       }
 
       if(newSegs.length===0) throw new Error("No valid data found");
+      // Debug: log first segment's first few rows to verify lastAge
+      if(newSegs[0]?.data?.length>0){
+        const sample=newSegs[0].data.slice(0,3).map(r=>{
+          const pts=r.pts||[];
+          const lastNonNull=pts.reduce((acc,v,i)=>v!==null?i:acc,-1);
+          return {aq:r.aq,implied:r.implied,lastPtIdx:lastNonNull,lastAge:lastNonNull>=0?[0,1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118,121,124,127][lastNonNull]:0};
+        });
+        console.log("DEBUG parsed sample:",JSON.stringify(sample));
+      }
       setDynamicSegments(newSegs);
       setActiveTab(newSegs[0].key);
       setSelectedAQs(Object.fromEntries(newSegs.map(s=>[s.key,new Set()])));
