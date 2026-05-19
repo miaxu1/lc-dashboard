@@ -590,40 +590,66 @@ export default function Dashboard(){
         return isNaN(n) ? null : Math.round(n*10000)/10000;
       };
 
+      const AGES_EXPECTED = [0,1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118,121,124,127];
+
       const parseSheet = (ws, hasExtra=true) => {
         const rows=[], ref=ws["!ref"];
         if(!ref) return {rows,cq:null};
         const range=XLSX.utils.decode_range(ref);
         let cq=null;
-        // Find header row (AQ row)
+        // Find header row (AQ row) and map column index -> age index
         let headerRow=-1, dataStartRow=-1;
+        const colToAgeIdx={};  // col index -> index in AGES_EXPECTED
+        const lcColLabels=[];  // labels after age cols (Implied LC, Default LC, Prior LC)
+        const lcCols=[];       // column indices of LC label cols
         for(let r=range.s.r;r<=range.e.r;r++){
           const cell=ws[XLSX.utils.encode_cell({r,c:0})];
-          if(cell?.v==="AQ"){headerRow=r;dataStartRow=r+1;break;}
+          if(cell?.v==="AQ"){
+            headerRow=r; dataStartRow=r+1;
+            // Read header cols
+            for(let c=1;c<=range.e.c;c++){
+              const hc=ws[XLSX.utils.encode_cell({r,c})];
+              if(hc?.v===undefined||hc?.v===null||hc?.v==="") continue;
+              const hv=hc.v;
+              if(typeof hv==="number"){
+                const idx=AGES_EXPECTED.indexOf(hv);
+                if(idx>=0) colToAgeIdx[c]=idx;
+              } else {
+                // string label like "Implied LC", "Default LC", "Prior LC"
+                lcColLabels.push({col:c, label:String(hv)});
+                lcCols.push(c);
+              }
+            }
+            break;
+          }
         }
         if(headerRow<0) return {rows,cq:null};
-        // Find total cols
-        const totalCols=range.e.c+1;
+
         for(let r=dataStartRow;r<=range.e.r;r++){
           const c0=ws[XLSX.utils.encode_cell({r,c:0})];
           if(!c0?.v) continue;
           const s=String(c0.v);
           if(s.startsWith("_20")){
             const aq=s.slice(1);
-            const vals=[];
-            for(let c=1;c<totalCols;c++){
-              const cell=ws[XLSX.utils.encode_cell({r,c})];
-              vals.push(pv(cell?.v));
+            // Build pts array aligned to AGES_EXPECTED
+            const pts=new Array(AGES_EXPECTED.length).fill(null);
+            for(const [col,aidx] of Object.entries(colToAgeIdx)){
+              const cell=ws[XLSX.utils.encode_cell({r,c:parseInt(col)})];
+              pts[aidx]=pv(cell?.v);
             }
-            if(hasExtra){
-              const pts=vals.slice(0,-3);
-              rows.push({aq,pts,implied:vals[vals.length-3],defaultLC:vals[vals.length-2],priorLC:vals[vals.length-1]});
-            } else {
-              const pts=vals.slice(0,-1);
-              rows.push({aq,pts,implied:vals[vals.length-1]});
+            // Read LC label columns
+            const lcVals={};
+            for(const {col,label} of lcColLabels){
+              const cell=ws[XLSX.utils.encode_cell({r,c:col})];
+              lcVals[label]=pv(cell?.v);
             }
-          } else if(s.includes("Selected CQ")||s.includes("CQ")){
-            for(let c=1;c<totalCols;c++){
+            // Find implied/default/prior by label or position
+            const implied = lcVals["Implied LC"] ?? lcVals["ImpliedLC"] ?? (lcCols.length>=1?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[0]})]?.v):null);
+            const defaultLC = hasExtra ? (lcVals["Default LC"] ?? lcVals["DefaultLC"] ?? (lcCols.length>=2?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[1]})]?.v):null)) : null;
+            const priorLC = hasExtra ? (lcVals["Prior LC"] ?? lcVals["PriorLC"] ?? (lcCols.length>=3?pv(ws[XLSX.utils.encode_cell({r,c:lcCols[2]})]?.v):null)) : null;
+            rows.push({aq,pts,implied,defaultLC,priorLC});
+          } else if(s.includes("Selected CQ")||s.includes("CQ LC")){
+            for(let c=1;c<=range.e.c;c++){
               const cell=ws[XLSX.utils.encode_cell({r,c})];
               if(cell?.v && !isNaN(parseFloat(cell.v))){cq=Math.round(parseFloat(cell.v)*10000)/10000;break;}
             }
